@@ -21,10 +21,18 @@ struct Face {
 	int v3;
 };
 
-#define NUM_VERTEX_IN_CIRCLE 20 // one for all diameters define for now, better to do depending on diameter
-#define NUM_STEPS_IN_RUPOR 55 // length in 10ths of mm (centimeter) ?
+// General model params
+
+#define NUM_VERTEX_IN_CIRCLE 50 // one for all diameters define for now, better to do depending on diameter
+#define NUM_STEPS_IN_RUPOR 185 // length in 10ths of mm (centimeter) ?
+#define DIRECT_BEGIN 10
+#define DIRECT_END 10
 float fRadius0 = 0.3f; // start rupor radius. in centimeters.
-float fBeta=0.078f; // beta exp param 
+float fSpRadius = 5.575f; // spiral bend radius in centimeters
+float fAxisCoordStep = 1.0f; // rupor axis coord step in centimeters
+float fBeta=0.026f; // beta exp param 
+float fSpLengthAdvInit = 0.028f; // spiral length advance at each step in X-axis (to be adjusted for connecting turns ?)
+float fThickness = 0.2f; // spacing between inner and outer surfaces
 
 // generate circle of vertices around given origin point rotated to given angle
 void CircleGen(std::vector<vec3>& vVerts, vec3 vOrigin, float xAng, float yAng, float zAng, float fRadius)
@@ -38,8 +46,11 @@ void CircleGen(std::vector<vec3>& vVerts, vec3 vOrigin, float xAng, float yAng, 
 
 		float fRot = ((float)i * 360.0f)/ NUM_VERTEX_IN_CIRCLE; // in degrees or 
 
-		// rotate around zero
+		// rotate around zero, Z-axis
 		Vert = rotatept(Vert, deg2rad(fRot), vec3(0.0, 0.0, 1.0).normalized());
+
+		// rotate around zero, X-axis
+		Vert = rotatept(Vert, deg2rad(xAng), vec3(1.0, 0.0, 0.0).normalized());
 
 		//move to origin
 		Vert.x += vOrigin.x;
@@ -106,15 +117,31 @@ int main()
     fprintf(f_out, "# 3ds Max Wavefront OBJ\r\n");
 
 	fprintf(f_out, "#\r\n");
-	fprintf(f_out, "# object rupor 01\r\n");
+	fprintf(f_out, "# General model params\r\n");
+	fprintf(f_out, "#\r\n");
+	fprintf(f_out, "# NUM_VERTEX_IN_CIRCLE %d \r\n", NUM_VERTEX_IN_CIRCLE);
+	fprintf(f_out, "# NUM_STEPS_IN_RUPOR %d (in fAxisCoordStep units) \r\n", NUM_STEPS_IN_RUPOR);
+	fprintf(f_out, "# fRadius0 %f (in centimeters) start rupor radius\r\n", fRadius0);
+	fprintf(f_out, "# fSpRadius %f (in centimeters) spiral bend radius\r\n", fSpRadius);
+	fprintf(f_out, "# fAxisCoordStep %f (in centimeters) rupor axis coord step in centimeters\r\n", fAxisCoordStep);
+	fprintf(f_out, "# fBeta %f beta exp param\r\n", fBeta);
+	fprintf(f_out, "# 0.7 low frequency cutoff about %f Hz (for 34000 cm/sec sound speed)\r\n", fBeta * 34000.0f / (2 * M_PI * 1.41f));
+	fprintf(f_out, "# fSpLengthAdvInit %f initial spiral length advance at each step in X-axis\r\n", fSpLengthAdvInit);
+	fprintf(f_out, "# fThickness %f (in centimeters) spacing between inner and outer surfaces\r\n", fThickness);
 	fprintf(f_out, "#\r\n");
 	fprintf(f_out, "\r\n");
 
 	// Create a vector containing vec3 points coords
 	std::vector<vec3> Vertices;
 
+	// Create a vector containing vec3 points coords
+	std::vector<vec3> VerticesOuter;
+
 	// Create a vector containing Faces data
 	std::vector<Face> Faces;
+
+	// Create a vector containing Faces data
+	std::vector<Face> FacesOuter;
 
 	double fSquareCurrent;
 
@@ -123,16 +150,39 @@ int main()
 	int iStartFirstCirc = 1;
 	int iStartSecondCirc = iStartFirstCirc + NUM_VERTEX_IN_CIRCLE;
 
+	int iNumVerticesInSide = NUM_VERTEX_IN_CIRCLE * NUM_STEPS_IN_RUPOR;
+
+	// global to save to model text max radius
+	float fRadius;
+
+	// main spiral circles rotation
+	// spiral angle position
+	float fSpAng = 0;
+
+	// spiral translation position
+	vec3 SpTrans;
+	SpTrans.x = 0.0f;
+	SpTrans.y = (-1.0f) * fSpRadius;
+	SpTrans.z = 0.0f;
+
 	// create first circle as base start to connect all next
 	fSquareCurrent = dSquare0 * expf(fBeta * fAxisCoord);
 
 	// recalculate exponencial shaped rupor radius at current rupor-axis length coordinate
-	float fRadius = sqrtf(fSquareCurrent / M_PI);
+	fRadius = sqrtf(fSquareCurrent / M_PI);
+
+	// translate vOrigin of first circle to start pos
+	vOrigin.x = 0.0f; 
+	vOrigin.y = SpTrans.y;
+	vOrigin.z = SpTrans.z;
 
 	CircleGen(Vertices, vOrigin, 0, 0, 0, fRadius);
+	CircleGen(VerticesOuter, vOrigin, 0, 0, 0, fRadius + fThickness);
 
-	fAxisCoord += 1.0f; // in cm
-	vOrigin.z += 1.0f; // 1 cm step in Z axis
+	fAxisCoord += fAxisCoordStep; // in cm
+
+	// calculate fSpAngStep from fAxisCoord of roupor square and current spiral radius
+	float fSpAngStep = (fAxisCoordStep * 360.0f) / (2 * M_PI * fSpRadius);
 
 	// create a set of straight circles of vertices and connect with faces
 	for (int i = 1; i < NUM_STEPS_IN_RUPOR; i++)
@@ -140,36 +190,82 @@ int main()
 		fSquareCurrent = dSquare0 * expf(fBeta * fAxisCoord);
 
 		// recalculate exponencial shaped rupor radius at current rupor-axis length coordinate
-		float fRadius = sqrtf(fSquareCurrent / M_PI);
+		fRadius = sqrtf(fSquareCurrent / M_PI);
 
-		CircleGen(Vertices, vOrigin, 0, 0, 0, fRadius);
+/*		// do not spiral rotate (and not spiral axis translate of DIRECT_BEGIN and DIRECT_END number of rupor steps 
+		if (i < DIRECT_BEGIN) // Z-advance no spiral rot
+		{
+
+		}
+		else if (i > DIRECT_END) // Y-advance no spiral rot
+		{
+
+		}
+		else // normal spiral
+		{*/
+			// spiral transforms
+			// rotate around zero, X-axis, additive at each length step
+			SpTrans = rotatept(SpTrans, deg2rad(fSpAngStep), vec3(1.0, 0.0, 0.0).normalized());
+
+			// calculate X-step for connecting turns with overlap
+			float fSpLengthAdv = fSpLengthAdvInit * ((fRadius + fThickness) / (fRadius0 + fThickness)); // attempt to be proportional to current circle radius
+
+			// translate origin
+			vOrigin.x += fSpLengthAdv; // to add X-shift in axis of the spiral
+			vOrigin.y = SpTrans.y;
+			vOrigin.z = SpTrans.z;
+
+			fSpAng += fSpAngStep;
+/* }*/
+
+		CircleGen(Vertices, vOrigin, fSpAng, 0, 0, fRadius);
+		CircleGen(VerticesOuter, vOrigin, fSpAng, 0, 0, fRadius + fThickness);
 
 		CircleConnect(Faces, iStartFirstCirc, iStartSecondCirc);
+		CircleConnect(FacesOuter, iStartFirstCirc + iNumVerticesInSide, iStartSecondCirc + iNumVerticesInSide);
 
-		fAxisCoord += 1.0f; // in cm
-		vOrigin.z += 1.0f; // 1 cm step in Z axis
+		fAxisCoord += fAxisCoordStep; // in cm
 
 		iStartFirstCirc += NUM_VERTEX_IN_CIRCLE;
 		iStartSecondCirc += NUM_VERTEX_IN_CIRCLE;
 	}
 
 	// write vertices list
+	// inner side
 	for (int i = 0; i < Vertices.size(); i++)
 	{
 		fprintf(f_out, "v  %f %f %f\r\n", Vertices[i].x, Vertices[i].y, Vertices[i].z);
 	}
 
-	fprintf(f_out, "# %d vertices\r\n", (int)Vertices.size());
-	fprintf(f_out, "\r\n");
-	fprintf(f_out, "g Rup01\r\n");
+	// outer side
+	for (int i = 0; i < VerticesOuter.size(); i++)
+	{
+		fprintf(f_out, "v  %f %f %f\r\n", VerticesOuter[i].x, VerticesOuter[i].y, VerticesOuter[i].z);
+	}
 
-	// write vertices list
+	fprintf(f_out, "# %d vertices\r\n", (int)(Vertices.size()+ VerticesOuter.size()));
+	fprintf(f_out, "\r\n");
+	fprintf(f_out, "g Rup01Inner\r\n");
+
+	// write faces list
 	for (int i = 0; i < Faces.size(); i++)
 	{
 		fprintf(f_out, "f  %d %d %d\r\n", Faces[i].v1, Faces[i].v2, Faces[i].v3);
 	}
 	fprintf(f_out, "# %d faces\r\n", (int)Faces.size());
 
+	fprintf(f_out, "g Rup01Outer\r\n");
+
+	// write faces list
+	for (int i = 0; i < FacesOuter.size(); i++)
+	{
+		fprintf(f_out, "f  %d %d %d\r\n", FacesOuter[i].v1, FacesOuter[i].v2, FacesOuter[i].v3);
+	}
+	fprintf(f_out, "# %d faces\r\n", (int)FacesOuter.size());
+
+	fprintf(f_out, "# Max out Diameter %f (in centimeters)\r\n", fRadius * 2.0f);
+	fprintf(f_out, "# Max X length %f (in centimeters)\r\n", vOrigin.x + fRadius0 + fRadius + 2* fThickness);
+	fprintf(f_out, "# Max Diameter below %f (in centimeters)\r\n", (fSpRadius + fRadius + fThickness)*2.0f);
 
     fclose(f_out);
 
